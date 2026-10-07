@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "DUFE Ginkgo Courseware Downloader",
+  "version": "0.1.0",
+  "description": "Downloads DUFE Ginkgo Cloud Classroom courseware files locally.",
+  "permissions": [
+    "downloads"
+  ],
+  "host_permissions": [
+    "https://ginkgostu.dufe.edu.cn/*",
+    "https://niu.edufe.com.cn/*",
+    "https://niukczy.edufe.com.cn/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "DUFE Ginkgo Downloader"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://ginkgostu.dufe.edu.cn/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["pageHook.js"],
+      "matches": ["https://ginkgostu.dufe.edu.cn/*"]
+    }
+  ]
+}

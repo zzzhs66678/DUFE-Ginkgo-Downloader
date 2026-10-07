@@ -1,0 +1,258 @@
+#dufe-downloader-panel {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 2147483647;
+  width: min(440px, calc(100vw - 32px));
+  max-height: min(700px, calc(100vh - 40px));
+  overflow: hidden;
+  border: 1px solid rgba(245, 158, 11, 0.24);
+  border-radius: 8px;
+  background: #fffdf7;
+  box-shadow: 0 18px 48px rgba(67, 56, 202, 0.18), 0 6px 18px rgba(15, 23, 42, 0.12);
+  color: #243042;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+}
+
+#dufe-downloader-panel.minimized {
+  max-height: 56px;
+}
+
+#dufe-downloader-panel.minimized #dufe-downloader-content {
+  display: none;
+}
+
+#dufe-downloader-header {
+  height: 56px;
+  padding: 0 12px 0 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: linear-gradient(135deg, #fef3c7 0%, #d9f99d 48%, #bae6fd 100%);
+  color: #334155;
+  cursor: move;
+  user-select: none;
+}
+
+#dufe-downloader-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 15px;
+  font-weight: 750;
+}
+
+.dufe-title-mark {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  border: 2px solid rgba(22, 101, 52, 0.72);
+  border-radius: 50% 50% 50% 12%;
+  background: #86efac;
+  box-shadow: inset -3px -3px 0 rgba(255, 255, 255, 0.42);
+  transform: rotate(-18deg);
+}
+
+#dufe-downloader-controls {
+  display: flex;
+  gap: 6px;
+}
+
+#dufe-downloader-controls button {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(51, 65, 85, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #475569;
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+#dufe-downloader-controls button:hover {
+  background: #ffffff;
+  color: #166534;
+}
+
+#dufe-downloader-content {
+  padding: 14px;
+  max-height: calc(min(700px, 100vh - 40px) - 56px);
+  overflow-y: auto;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(255, 253, 247, 0.98)),
+    repeating-linear-gradient(135deg, rgba(251, 191, 36, 0.08) 0 8px, rgba(125, 211, 252, 0.08) 8px 16px);
+}
+
+#dufe-downloader-status {
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  border: 1px solid rgba(14, 165, 233, 0.16);
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+#dufe-downloader-status.success {
+  border-color: rgba(34, 197, 94, 0.2);
+  background: #ecfdf5;
+  color: #17643a;
+}
+
+#dufe-downloader-status.error {
+  border-color: rgba(244, 63, 94, 0.2);
+  background: #fff1f2;
+  color: #9f1239;
+}
+
+.dufe-file-item {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  margin-bottom: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
+}
+
+.dufe-file-item:hover {
+  border-color: rgba(245, 158, 11, 0.38);
+  background: #ffffff;
+}
+
+.dufe-file-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.dufe-file-name {
+  overflow: hidden;
+  color: #1f2937;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dufe-file-meta {
+  margin-top: 4px;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dufe-file-actions {
+  display: grid;
+  grid-template-columns: 68px;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.dufe-download-btn,
+.dufe-open-btn,
+.dufe-download-all-btn {
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.dufe-download-btn,
+.dufe-open-btn {
+  width: 68px;
+  min-height: 32px;
+  padding: 7px 8px;
+}
+
+.dufe-download-btn {
+  background: #22c55e;
+  color: #ffffff;
+}
+
+.dufe-download-btn:hover {
+  background: #16a34a;
+}
+
+.dufe-open-btn {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+.dufe-open-btn:hover {
+  background: #bae6fd;
+}
+
+.dufe-download-all-btn {
+  width: 100%;
+  min-height: 42px;
+  margin-top: 6px;
+  padding: 11px 12px;
+  background: linear-gradient(135deg, #22c55e 0%, #14b8a6 100%);
+  color: #ffffff;
+  box-shadow: 0 8px 18px rgba(20, 184, 166, 0.2);
+}
+
+.dufe-download-all-btn:hover {
+  background: linear-gradient(135deg, #16a34a 0%, #0f766e 100%);
+}
+
+.dufe-download-btn:disabled,
+.dufe-open-btn:disabled,
+.dufe-download-all-btn:disabled {
+  background: #dbe3ea;
+  color: #718096;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.dufe-empty-state {
+  padding: 28px 12px;
+  text-align: center;
+}
+
+.dufe-empty-title {
+  color: #334155;
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.dufe-empty-text {
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+@media (max-width: 420px) {
+  #dufe-downloader-panel {
+    top: 12px;
+    right: 12px;
+    width: calc(100vw - 24px);
+  }
+
+  .dufe-file-item {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .dufe-file-actions {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .dufe-download-btn,
+  .dufe-open-btn {
+    width: 100%;
+  }
+}
