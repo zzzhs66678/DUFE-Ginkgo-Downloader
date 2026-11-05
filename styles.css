@@ -197,6 +197,24 @@
   box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
 }
 
+#dufe-downloader-panel .dufe-course-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin: 17px 0 8px;
+  color: #166534;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+#dufe-downloader-panel .dufe-course-heading span:last-child {
+  flex: 0 0 auto;
+  color: #64748b;
+  font-weight: 400;
+}
+
 .dufe-file-item:hover {
   border-color: rgba(245, 158, 11, 0.38);
   background: #ffffff;
@@ -281,6 +299,13 @@
 
 .dufe-download-all-btn:hover {
   background: linear-gradient(135deg, #16a34a 0%, #0f766e 100%);
+}
+
+#dufe-downloader-panel .dufe-semester-download {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 0 4px;
 }
 
 .dufe-download-btn:disabled,

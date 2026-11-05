@@ -5,6 +5,7 @@
   const API_ORIGIN = "https://ginkgostu.dufe.edu.cn";
   const POLL_URL_INTERVAL = 1000;
   const CONCURRENT_REQUESTS = 4;
+  const ALL_HISTORY_COURSES = "__all_courses__";
 
   let panel = null;
   let filesData = [];
@@ -288,6 +289,8 @@
   }
 
   function courseKey(course) { return `${course.courseNo}|${course.courseSeq}`; }
+  function fileKey(file) { return `${file.batchNo || ""}|${courseKey(file)}|${file.id || file.url || file.name}`; }
+  function isWholeSemester() { return viewMode === "history" && historyCourseKey === ALL_HISTORY_COURSES; }
 
   function renderHistorySelectors() {
     if (!panel) return;
@@ -299,6 +302,7 @@
     termSelect.value = historyBatch;
     termSelect.disabled = !terms.length;
     courseSelect.replaceChildren(new Option(historyCourses.length ? `请选择课程（${historyCourses.length} 门）` : "该学期暂无课程", ""),
+      ...(historyCourses.length ? [new Option(`本学期全部课程（${historyCourses.length} 门）`, ALL_HISTORY_COURSES)] : []),
       ...historyCourses.map(course => new Option(
         `${course.courseName || course.courseNo}${course.teacherName ? ` · ${course.teacherName}` : ""} · ${course.courseSeq}班`, courseKey(course)
       )));
@@ -337,7 +341,8 @@
       historyCourses = uniqueBy(slots, courseKey).map(course => ({
         ...course, slots: slots.filter(slot => courseKey(slot) === courseKey(course))
       }));
-      if (!historyCourses.some(course => courseKey(course) === historyCourseKey)) historyCourseKey = "";
+      if (!(historyCourses.length && historyCourseKey === ALL_HISTORY_COURSES) &&
+          !historyCourses.some(course => courseKey(course) === historyCourseKey)) historyCourseKey = "";
       renderHistorySelectors();
       if (historyCourseKey) { await loadHistoryFiles(); return; }
       setStatus(historyCourses.length ? `找到 ${historyCourses.length} 门课程，请选择要查看的课程。` : "该学期没有查询到你的课程，可换一个学期查看。");
@@ -345,23 +350,33 @@
   }
 
   async function loadHistoryFiles() {
-    const course = historyCourses.find(item => courseKey(item) === historyCourseKey);
-    if (!course) { cancelScan(); clearFiles(); setStatus("请选择要查看的课程。"); return; }
+    const wholeSemester = isWholeSemester();
+    const courses = wholeSemester ? [...historyCourses] : historyCourses.filter(item => courseKey(item) === historyCourseKey);
+    if (!courses.length) { cancelScan(); clearFiles(); setStatus("请选择要查看的课程。"); return; }
     const term = terms.find(item => item.batchNo === historyBatch);
     await runScan(async scan => {
-      setStatus(`正在读取 ${course.courseName} 的课件…`);
       const files = [];
       let failed = 0;
-      try { files.push(...await fetchChapterResources(course, scan)); }
-      catch (error) {
-        if (error.name === "AbortError" || error.authRequired) throw error;
-        failed++;
+      // Courses run in order; each course uses at most CONCURRENT_REQUESTS
+      // requests, avoiding a separate concurrent pool for every course.
+      for (let index = 0; index < courses.length; index++) {
+        if (!isCurrentScan(scan)) return;
+        const course = courses[index];
+        const progress = wholeSemester ? `课程 ${index + 1}/${courses.length} · ` : "";
+        setStatus(`${progress}正在读取 ${course.courseName} 的章节课件…`);
+        try { files.push(...await fetchChapterResources(course, scan)); }
+        catch (error) {
+          if (error.name === "AbortError" || error.authRequired) throw error;
+          failed++;
+        }
+        const result = await fetchAllCoursewares(course.slots, scan, progress);
+        if (!isCurrentScan(scan)) return;
+        files.push(...result.files);
+        failed += result.failed;
       }
-      const result = await fetchAllCoursewares(course.slots, scan);
-      if (!isCurrentScan(scan)) return;
-      files.push(...result.files);
-      updateFilesList(files.map(file => ({ ...file, batchNo: scan.batchNo, batchName: term?.batchName || scan.batchNo, historical: true })), course.courseName);
-      showPartialFailures(failed + result.failed);
+      updateFilesList(files.map(file => ({ ...file, batchNo: scan.batchNo, batchName: term?.batchName || scan.batchNo, historical: true })),
+        wholeSemester ? `本学期全部 ${courses.length} 门课程` : courses[0].courseName);
+      showPartialFailures(failed);
     }, historyBatch);
   }
 
@@ -415,7 +430,7 @@
     return uniqueBy(courses, course => `${course.courseNo}|${course.courseSeq}|${course.weekTimeId}`);
   }
 
-  async function fetchAllCoursewares(courses, scan) {
+  async function fetchAllCoursewares(courses, scan, progress = "") {
     const results = [];
     let cursor = 0;
     let failed = 0;
@@ -425,7 +440,7 @@
         if (!isCurrentScan(scan)) return;
         const index = cursor++;
         const course = courses[index];
-        setStatus(`正在读取课次 ${index + 1}/${courses.length}：${course.courseName || course.courseNo}`);
+        setStatus(`${progress}正在读取课次 ${index + 1}/${courses.length}：${course.courseName || course.courseNo}`);
 
         try {
           const files = await fetchCoursewareList(course, scan);
@@ -442,7 +457,7 @@
       worker
     ));
 
-    return { files: uniqueBy(results, file => file.id || file.url || `${file.courseName}|${file.name}`), failed };
+    return { files: uniqueBy(results, fileKey), failed };
   }
 
   async function fetchCoursewareList(course, scan) {
@@ -644,7 +659,7 @@
   }
 
   function updateFilesList(files, sourceLabel) {
-    filesData = uniqueBy(files || [], file => file.id || file.url || file.name);
+    filesData = uniqueBy(files || [], fileKey);
     if (!panel) return;
 
     panel.style.display = "block";
@@ -660,18 +675,26 @@
     if (!filesData.length) {
       container.innerHTML = `
         <div class="dufe-empty-state">
-          <div class="dufe-empty-title">${viewMode === "history" ? "这门课暂无可读取的课件" : "还没有发现课件"}</div>
+          <div class="dufe-empty-title">${isWholeSemester() ? "本学期暂无可读取的课件" : viewMode === "history" ? "这门课暂无可读取的课件" : "还没有发现课件"}</div>
           <div class="dufe-empty-text">${viewMode === "history" ? "可以换一门课程，或点击刷新重试。" : "打开课程章节页后点一下刷新。"}</div>
         </div>
       `;
       return;
     }
 
+    const counts = new Map();
+    filesData.forEach(file => counts.set(courseKey(file), (counts.get(courseKey(file)) || 0) + 1));
+    let previousCourse = "";
     const rows = filesData.map((file, index) => {
       const downloadDisabled = !getDownloadUrl(file);
       const openDisabled = !file.url;
       const accessLabel = file.isDownload ? "允许下载" : "仅可预览";
+      const key = courseKey(file);
+      const heading = isWholeSemester() && previousCourse !== key
+        ? `<div class="dufe-course-heading"><span>${escapeHtml(file.courseName || file.courseNo)} · ${escapeHtml(file.courseSeq)}班</span><span>${counts.get(key)} 个课件</span></div>` : "";
+      previousCourse = key;
       return `
+        ${heading}
         <div class="dufe-file-item">
           <div class="dufe-file-info">
             <div class="dufe-file-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</div>
@@ -692,10 +715,10 @@
     }).join("");
 
     const allButton = downloadableCount > 1
-      ? `<button class="dufe-download-all-btn" data-action="download-all">一键下载全部（${downloadableCount}）</button>`
+      ? `<button class="dufe-download-all-btn${isWholeSemester() ? " dufe-semester-download" : ""}" data-action="download-all">${isWholeSemester() ? "一键下载本学期" : "一键下载全部"}（${downloadableCount}）</button>`
       : "";
 
-    container.innerHTML = rows + allButton;
+    container.innerHTML = isWholeSemester() ? allButton + rows : rows + allButton;
   }
 
   async function openFileByIndex(index, button) {
@@ -749,6 +772,7 @@
   }
 
   async function downloadAllFiles(button) {
+    const initialLabel = button.textContent;
     const downloadable = filesData
       .map((file, index) => ({ file, index }))
       .filter(item => getDownloadUrl(item.file));
@@ -770,7 +794,7 @@
     setStatus(`已提交 ${successCount}/${downloadable.length} 个下载任务，请在浏览器下载列表查看。`, successCount ? "success" : "error");
     setTimeout(() => {
       button.disabled = false;
-      button.textContent = `一键下载全部（${downloadable.length}）`;
+      button.textContent = initialLabel;
     }, 2500);
   }
 

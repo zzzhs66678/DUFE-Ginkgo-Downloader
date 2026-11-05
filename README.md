@@ -16,13 +16,15 @@ Downloads are saved under the browser download directory in a `DUFE-Ginkgo/` sub
 
 The extension mirrors Ginkgo's frontend request authentication shape: same-origin requests include the logged-in page's `token`, `batchNo`, and `fingerprint` request headers when they are available in the page runtime.
 
-## 历史学期课件（v0.2.0）
+## 历史学期课件（v0.2.1）
 
 在“银杏课件小助手”标题下切换到 **历史学期**：
 
 1. 选择学期。列表显示账号接口返回的全部学期；首次打开默认选中网页最近三个学期之前的一个学期。
-2. 选择课程。插件合并这门课的章节资源与各课次课件，去除重复项。
-3. 使用原来的“预览”“下载”或“一键下载全部”。“全部”指当前所选课程的已读取课件。
+2. 选择一门课程，或选下拉框顶部的 **本学期全部课程**。插件合并所选课程的章节资源与各课次课件，去除同一课程内的重复项。
+3. 整学期扫描显示课程和课次进度，完成后按课程分组。使用“预览”“下载”或“一键下载本学期”；只选一门课时仍使用“一键下载全部”。批量下载只包含当前列表已读取且有下载地址的课件。
+
+整学期扫描按课程依次读取，最多同时发送 4 个课次请求。切换课程、学期或视图会取消旧扫描；一处读取失败不会阻断其余课程，结果会提示可能不完整。点击刷新会保留“本学期全部课程”选择并重新扫描。
 
 历史课件保存到 `DUFE-Ginkgo/学期/课程/文件名`。切回 **当前页面** 即恢复原来的页面扫描方式。右上角刷新按钮刷新当前所选视图。
 

@@ -27,11 +27,19 @@ def resource(batch, ident, name="02 人格特征.pdf"):
                                       viewUrl=f"https://niukczy.edufe.com.cn/fixture-{batch}-{ident}"))
 
 
+def math_resource(batch, ident):
+    item = resource(batch, ident, "第一章 函数与极限.pdf" if ident == 1 else "第二章 导数.pdf")
+    # Same source IDs in different courses must remain in both course folders.
+    item.update(courseNo="C2", courseSeq="02", courseName="高等数学（上）")
+    return item
+
+
 async def main():
     state = {}
     calls = []
     errors = []
     passed = []
+    metrics = {"active": 0, "peak": 0}
     with tempfile.TemporaryDirectory(prefix="ginkgo-browser-test-") as profile:
         async with async_playwright() as p:
             context = await p.chromium.launch_persistent_context(
@@ -41,7 +49,7 @@ async def main():
             await context.add_init_script("""localStorage.setItem('token','fixture-account');
                 localStorage.setItem('batch','14'); localStorage.setItem('fingerprint','fixture-device');""")
 
-            async def handle(route):
+            async def respond(route):
                 req = route.request
                 url = req.url
                 if not url.startswith(ORIGIN):
@@ -53,6 +61,7 @@ async def main():
                     return
                 batch = req.headers.get("batchno", "")
                 body = json.loads(req.post_data or "{}")
+                course_no = body.get("courseNo") or body.get("dcCoursewareSourceParam", {}).get("courseNo")
                 calls.append(dict(path=path, batch=batch, body=body))
                 delay = state.get("delay", {}).get((batch, path), 0)
                 if delay:
@@ -60,7 +69,7 @@ async def main():
                 if state.get("auth_error"):
                     await route.fulfill(json={"code": "1000", "message": "expired", "data": None})
                     return
-                if state.get("fail_path") == path:
+                if state.get("fail_path") == path or (course_no and state.get("fail_course") == course_no):
                     await route.fulfill(status=500, json={"code": "500", "data": None})
                     return
                 if path.endswith("getTermList"):
@@ -71,12 +80,21 @@ async def main():
                         dict(courseNo="C1", courseSeq="01", courseName="大学生心理健康教育", teacherName="任老师", weekTimeId=2),
                         dict(courseNo="C2", courseSeq="02", courseName="高等数学（上）", teacherName="王老师", weekTimeId=3)
                     ]}]}]
+                    if state.get("many_slots") and data:
+                        courses = data[0]["dayList"][0]["courseList"]
+                        data[0]["dayList"][0]["courseList"] = [
+                            dict(course, weekTimeId=100 * index + slot)
+                            for index, course in enumerate([courses[0], courses[2]], 1) for slot in range(1, 7)]
                 elif path.endswith("getCourseInfo"):
                     no = body.get("dcCoursewareSourceParam", {}).get("courseNo")
                     data = {"sourceChapter": {"dcCoursewareSourceList": [] if no == "C2" else [resource(batch, 1)],
                                               "children": []}}
+                    if no == "C2" and state.get("populate_c2"):
+                        data["sourceChapter"]["dcCoursewareSourceList"] = [math_resource(batch, 1)]
                 elif path.endswith("getCoursewareList"):
                     data = [] if body.get("courseNo") == "C2" else [resource(batch, 1), resource(batch, 2, "03 学业管理展示主题.pdf")]
+                    if course_no == "C2" and state.get("populate_c2"):
+                        data = [math_resource(batch, 1), math_resource(batch, 2)]
                 elif path.endswith("studyCourse"):
                     data = True
                 else:
@@ -87,6 +105,17 @@ async def main():
                 except Exception:
                     # A cancelled scan can close its request before fixture delay ends.
                     pass
+
+            async def handle(route):
+                resource_request = any(path in route.request.url for path in ("/student/getCourseInfo", "/student/getCoursewareList"))
+                if resource_request:
+                    metrics["active"] += 1
+                    metrics["peak"] = max(metrics["peak"], metrics["active"])
+                try:
+                    await respond(route)
+                finally:
+                    if resource_request:
+                        metrics["active"] -= 1
 
             await context.route("https://**/*", handle)
             worker = context.service_workers[0] if context.service_workers else await context.wait_for_event("serviceworker")
@@ -197,6 +226,60 @@ async def main():
             await expect(page.locator(".dufe-file-item")).to_have_count(0)
             await expect(page.locator("#dufe-course-select")).to_have_value("")
             passed.append("Business-code auth failure; recovery; account-change invalidation")
+
+            await fresh()
+            state.update(populate_c2=True, many_slots=True,
+                         delay={("11", "/student/getCoursewareList"): 0.12})
+            metrics["peak"] = 0
+            await history(course="")
+            calls.clear()
+            await page.locator("#dufe-course-select").select_option(label="本学期全部课程（2 门）")
+            await expect(page.locator("#dufe-downloader-status")).to_contain_text("课程 1/2")
+            await expect(page.locator("#dufe-downloader-status")).to_contain_text("本学期全部 2 门课程")
+            await expect(page.locator(".dufe-file-item")).to_have_count(4)
+            await expect(page.locator(".dufe-course-heading")).to_have_count(2)
+            await expect(page.locator('[data-action="download-all"]')).to_have_text("一键下载本学期（4）")
+            assert await page.locator("#dufe-files-container > :first-child").get_attribute("data-action") == "download-all"
+            assert 1 < metrics["peak"] <= 4, metrics
+            assert len([x for x in calls if x["path"].endswith("getCourseInfo")]) == 2
+            assert len([x for x in calls if x["path"].endswith("getCoursewareList")]) == 12
+            assert all(x["batch"] == "11" for x in calls)
+            assert not any(x["path"].endswith("studyCourse") for x in calls)
+            assert await page.evaluate("localStorage.getItem('batch')") == "14"
+            await page.locator("#dufe-downloader-panel").screenshot(path=str(out / "semester-panel.png"))
+            await page.set_viewport_size({"width": 390, "height": 844})
+            await page.screenshot(path=str(out / "semester-mobile.png"))
+            assert await page.locator("#dufe-downloader-content").evaluate("e => e.scrollWidth <= e.clientWidth")
+            await page.set_viewport_size({"width": 1280, "height": 850})
+            passed.append("Whole semester: all courses/slots, progress, grouped deduplication, at most 4 concurrent requests, mobile layout")
+
+            before_downloads = len(await worker.evaluate("testDownloads"))
+            await page.locator('[data-action="download-all"]').click()
+            await expect(page.locator('[data-action="download-all"]')).to_contain_text("已开始 4/4")
+            whole_downloads = (await worker.evaluate("testDownloads"))[before_downloads:]
+            assert len(whole_downloads) == 4
+            assert len({x["filename"].split("/")[2] for x in whole_downloads}) == 2
+            assert all("2024-2025" in x["filename"] for x in whole_downloads)
+            await page.locator("#dufe-refresh-btn").click()
+            await expect(page.locator("#dufe-downloader-status")).to_contain_text("本学期全部 2 门课程")
+            await expect(page.locator("#dufe-course-select")).to_have_value("__all_courses__")
+            passed.append("Whole-semester downloads retain course folders; refresh preserves all-course scope")
+
+            state["fail_course"] = "C2"
+            await page.locator("#dufe-refresh-btn").click()
+            await expect(page.locator("#dufe-downloader-status")).to_contain_text("结果可能不完整")
+            await expect(page.locator(".dufe-file-item")).to_have_count(2)
+            state.pop("fail_course")
+            state["delay"] = {("11", "/student/getCourseInfo"): 0.8}
+            calls.clear()
+            await page.locator("#dufe-refresh-btn").click()
+            await expect(page.locator("#dufe-downloader-status")).to_contain_text("课程 1/2")
+            await page.locator("#dufe-course-select").select_option("C2|02")
+            await expect(page.locator("#dufe-downloader-status")).to_contain_text("找到 2 个课件")
+            await expect(page.locator(".dufe-file-name").first).to_contain_text("函数与极限")
+            await expect(page.locator(".dufe-course-heading")).to_have_count(0)
+            assert not any(x["path"].endswith("getCoursewareList") and x["body"].get("courseNo") == "C1" for x in calls)
+            passed.append("Failed course does not hide other courses; changing selection cancels whole-semester queue")
 
             await fresh("/course/detail/C1/01/1?courseName=心理健康")
             await expect(page.locator(".dufe-file-item")).to_have_count(2)
