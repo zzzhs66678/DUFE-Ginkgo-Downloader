@@ -5,11 +5,19 @@
   const API_ORIGIN = "https://ginkgostu.dufe.edu.cn";
   const POLL_URL_INTERVAL = 1000;
   const CONCURRENT_REQUESTS = 4;
+  const ALL_HISTORY_COURSES = "__all_courses__";
 
   let panel = null;
   let filesData = [];
   let lastUrl = location.href;
   let isScanning = false;
+  let viewMode = "page";
+  let terms = [];
+  let historyBatch = "";
+  let historyCourses = [];
+  let historyCourseKey = "";
+  let activeScan = null;
+  let identity = readIdentity();
 
   injectPageHook();
   whenBodyReady(() => {
@@ -24,9 +32,22 @@
   window.addEventListener("hashchange", scanCurrentContext);
 
   setInterval(() => {
-    if (location.href === lastUrl) return;
+    const nextIdentity = readIdentity();
+    const accountChanged = nextIdentity.token !== identity.token || nextIdentity.fingerprint !== identity.fingerprint;
+    const pageChanged = location.href !== lastUrl || nextIdentity.batchNo !== identity.batchNo;
+    if (!accountChanged && !pageChanged) return;
+    identity = nextIdentity;
     lastUrl = location.href;
-    scanCurrentContext();
+    if (accountChanged) {
+      terms = [];
+      historyCourses = [];
+      historyCourseKey = "";
+      historyBatch = "";
+      renderHistorySelectors();
+      refreshActiveView();
+    } else if (viewMode === "page") {
+      scanCurrentContext({ force: true });
+    }
   }, POLL_URL_INTERVAL);
 
   function injectPageHook() {
@@ -67,7 +88,18 @@
           </div>
         </div>
         <div id="dufe-downloader-content">
-          <div id="dufe-downloader-status">正在准备...</div>
+          <div class="dufe-view-switch" role="group" aria-label="课件来源">
+            <button type="button" data-view="page" aria-pressed="true">当前页面</button>
+            <button type="button" data-view="history" aria-pressed="false">历史学期</button>
+          </div>
+          <div id="dufe-history-filters" hidden>
+            <label for="dufe-term-select">学期</label>
+            <select id="dufe-term-select" disabled><option value="">正在读取学期…</option></select>
+            <label for="dufe-course-select">课程</label>
+            <select id="dufe-course-select" disabled><option value="">请先选择学期</option></select>
+            <p class="dufe-history-hint">查看账号内的往期课件，网页当前学期保持不变。</p>
+          </div>
+          <div id="dufe-downloader-status" role="status" aria-live="polite">正在准备...</div>
           <div id="dufe-files-container"></div>
         </div>
       </div>
@@ -78,7 +110,21 @@
     makeDraggable(panel);
 
     panel.querySelector("#dufe-refresh-btn").addEventListener("click", () => {
-      scanCurrentContext({ force: true });
+      refreshActiveView();
+    });
+    panel.querySelectorAll("[data-view]").forEach(button => {
+      button.addEventListener("click", () => switchView(button.dataset.view));
+    });
+    panel.querySelector("#dufe-term-select").addEventListener("change", event => {
+      historyBatch = event.target.value;
+      historyCourseKey = "";
+      historyCourses = [];
+      renderHistorySelectors();
+      loadHistoryCourses();
+    });
+    panel.querySelector("#dufe-course-select").addEventListener("change", event => {
+      historyCourseKey = event.target.value;
+      loadHistoryFiles();
     });
     panel.querySelector("#dufe-minimize-btn").addEventListener("click", event => {
       panel.classList.toggle("minimized");
@@ -139,48 +185,203 @@
   }
 
   async function scanCurrentContext(options = {}) {
+    if (viewMode !== "page") return;
     if (isScanning && !options.force) return;
     if (!panel && document.body) createPanel();
 
     const chaptersRoute = parseCourseChaptersRoute(location.pathname);
     if (chaptersRoute) {
-      await runScan(async () => {
+      await runScan(async scan => {
         setStatus("正在扫描章节资源...");
-        const files = await fetchChapterResources(chaptersRoute);
-        updateFilesList(files, getCourseNameFromUrl() || "章节页");
+        const files = await fetchChapterResources(chaptersRoute, scan);
+        if (isCurrentScan(scan)) updateFilesList(files, chaptersRoute.courseName || "章节页");
       });
       return;
     }
 
     const detailRoute = parseCourseDetailRoute(location.pathname);
     if (detailRoute) {
-      await runScan(async () => {
+      await runScan(async scan => {
         setStatus("正在扫描当前课程...");
-        const files = await fetchCoursewareList(detailRoute);
-        updateFilesList(files, getCourseNameFromUrl() || "课程页");
+        const files = await fetchCoursewareList(detailRoute, scan);
+        if (isCurrentScan(scan)) updateFilesList(files, detailRoute.courseName || "课程页");
       });
       return;
     }
 
     if (location.pathname.startsWith("/course/list")) {
-      await runScan(async () => {
+      await runScan(async scan => {
         setStatus("正在扫描课程列表...");
-        const courses = await fetchCourseList();
-        const files = await fetchAllCoursewares(courses);
-        updateFilesList(files, `${courses.length} 门课程`);
+        const courses = await fetchCourseList(scan);
+        const result = await fetchAllCoursewares(courses, scan);
+        if (isCurrentScan(scan)) {
+          updateFilesList(result.files, `${new Set(courses.map(courseKey)).size} 门课程`);
+          showPartialFailures(result.failed);
+        }
       });
+      return;
+    }
+    cancelScan();
+    clearFiles();
+    setStatus("打开课程页查看课件，或选择“历史学期”。");
+  }
+
+  function readIdentity() {
+    return {
+      token: localStorage.getItem("token") || "",
+      batchNo: localStorage.getItem("batch") || "",
+      fingerprint: localStorage.getItem("fingerprint") || ""
+    };
+  }
+
+  function cancelScan() {
+    activeScan?.controller.abort();
+    activeScan = null;
+    isScanning = false;
+  }
+
+  function clearFiles() {
+    filesData = [];
+    if (panel) panel.querySelector("#dufe-files-container").replaceChildren();
+  }
+
+  function isCurrentScan(scan) {
+    const current = readIdentity();
+    return activeScan === scan && !scan.signal.aborted && viewMode === scan.mode &&
+      current.token === scan.token && current.fingerprint === scan.fingerprint &&
+      (scan.mode === "history" || (current.batchNo === scan.batchNo && location.href === scan.url));
+  }
+
+  async function runScan(callback, batchNo) {
+    cancelScan();
+    clearFiles();
+    const controller = new AbortController();
+    const scan = { ...readIdentity(), controller, signal: controller.signal, mode: viewMode, url: location.href };
+    if (batchNo !== undefined) scan.batchNo = batchNo;
+    activeScan = scan;
+    isScanning = true;
+    try {
+      if (!scan.token) throw new Error("请先登录白果云，再点击刷新。");
+      await callback(scan);
+    } catch (error) {
+      if (isCurrentScan(scan) && error.name !== "AbortError") setStatus(`读取失败：${error.message}`, "error");
+      scan.controller.abort();
+    } finally {
+      if (activeScan === scan) isScanning = false;
     }
   }
 
-  async function runScan(callback) {
-    isScanning = true;
-    try {
-      await callback();
-    } catch (error) {
-      setStatus(`扫描失败：${error.message}`, "error");
-    } finally {
-      isScanning = false;
-    }
+  function refreshActiveView() {
+    if (viewMode === "history") return loadHistoryTerms();
+    return scanCurrentContext({ force: true });
+  }
+
+  function switchView(mode) {
+    if (viewMode === mode) return;
+    viewMode = mode;
+    cancelScan();
+    clearFiles();
+    panel.querySelectorAll("[data-view]").forEach(button => {
+      button.setAttribute("aria-pressed", String(button.dataset.view === mode));
+    });
+    panel.querySelector("#dufe-history-filters").hidden = mode !== "history";
+    refreshActiveView();
+  }
+
+  function courseKey(course) { return `${course.courseNo}|${course.courseSeq}`; }
+  function fileKey(file) { return `${file.batchNo || ""}|${courseKey(file)}|${file.id || file.url || file.name}`; }
+  function isWholeSemester() { return viewMode === "history" && historyCourseKey === ALL_HISTORY_COURSES; }
+
+  function renderHistorySelectors() {
+    if (!panel) return;
+    const termSelect = panel.querySelector("#dufe-term-select");
+    const courseSelect = panel.querySelector("#dufe-course-select");
+    termSelect.replaceChildren(...(terms.length ? terms.map(term =>
+      new Option(`${term.batchName}${isTrue(term.isCurrentTerm) ? "（当前）" : ""}`, term.batchNo)
+    ) : [new Option("暂无学期，请点击刷新", "")]));
+    termSelect.value = historyBatch;
+    termSelect.disabled = !terms.length;
+    courseSelect.replaceChildren(new Option(historyCourses.length ? `请选择课程（${historyCourses.length} 门）` : "该学期暂无课程", ""),
+      ...(historyCourses.length ? [new Option(`本学期全部课程（${historyCourses.length} 门）`, ALL_HISTORY_COURSES)] : []),
+      ...historyCourses.map(course => new Option(
+        `${course.courseName || course.courseNo}${course.teacherName ? ` · ${course.teacherName}` : ""} · ${course.courseSeq}班`, courseKey(course)
+      )));
+    courseSelect.value = historyCourseKey;
+    courseSelect.disabled = !historyCourses.length;
+  }
+
+  async function loadHistoryTerms() {
+    await runScan(async scan => {
+      setStatus("正在读取全部学期…");
+      panel.querySelector("#dufe-term-select").disabled = true;
+      panel.querySelector("#dufe-course-select").disabled = true;
+      const data = getSuccessData(await apiRequest("/student/term/getTermList", { contentType: null, scan }));
+      if (!Array.isArray(data)) throw new Error("学期列表格式发生变化，请稍后重试。");
+      if (!isCurrentScan(scan)) return;
+      terms = uniqueBy(data.filter(term => term && term.batchNo && term.batchName), term => String(term.batchNo))
+        .map(term => ({ ...term, batchNo: String(term.batchNo) }))
+        .sort((a, b) => String(b.beginDate || "").localeCompare(String(a.beginDate || "")) || b.batchNo.localeCompare(a.batchNo, undefined, { numeric: true }));
+      if (!terms.some(term => term.batchNo === historyBatch)) {
+        historyBatch = (terms[3] || terms.find(term => !isTrue(term.isCurrentTerm)) || terms[0])?.batchNo || "";
+        historyCourseKey = "";
+      }
+      historyCourses = [];
+      renderHistorySelectors();
+      if (!terms.length) { setStatus("账号未返回可查询的学期。"); return; }
+      await loadHistoryCourses();
+    });
+  }
+
+  async function loadHistoryCourses() {
+    await runScan(async scan => {
+      setStatus("正在读取所选学期的课程…");
+      panel.querySelector("#dufe-course-select").disabled = true;
+      const slots = await fetchCourseList(scan);
+      if (!isCurrentScan(scan)) return;
+      historyCourses = uniqueBy(slots, courseKey).map(course => ({
+        ...course, slots: slots.filter(slot => courseKey(slot) === courseKey(course))
+      }));
+      if (!(historyCourses.length && historyCourseKey === ALL_HISTORY_COURSES) &&
+          !historyCourses.some(course => courseKey(course) === historyCourseKey)) historyCourseKey = "";
+      renderHistorySelectors();
+      if (historyCourseKey) { await loadHistoryFiles(); return; }
+      setStatus(historyCourses.length ? `找到 ${historyCourses.length} 门课程，请选择要查看的课程。` : "该学期没有查询到你的课程，可换一个学期查看。");
+    }, historyBatch);
+  }
+
+  async function loadHistoryFiles() {
+    const wholeSemester = isWholeSemester();
+    const courses = wholeSemester ? [...historyCourses] : historyCourses.filter(item => courseKey(item) === historyCourseKey);
+    if (!courses.length) { cancelScan(); clearFiles(); setStatus("请选择要查看的课程。"); return; }
+    const term = terms.find(item => item.batchNo === historyBatch);
+    await runScan(async scan => {
+      const files = [];
+      let failed = 0;
+      // Courses run in order; each course uses at most CONCURRENT_REQUESTS
+      // requests, avoiding a separate concurrent pool for every course.
+      for (let index = 0; index < courses.length; index++) {
+        if (!isCurrentScan(scan)) return;
+        const course = courses[index];
+        const progress = wholeSemester ? `课程 ${index + 1}/${courses.length} · ` : "";
+        setStatus(`${progress}正在读取 ${course.courseName} 的章节课件…`);
+        try { files.push(...await fetchChapterResources(course, scan)); }
+        catch (error) {
+          if (error.name === "AbortError" || error.authRequired) throw error;
+          failed++;
+        }
+        const result = await fetchAllCoursewares(course.slots, scan, progress);
+        if (!isCurrentScan(scan)) return;
+        files.push(...result.files);
+        failed += result.failed;
+      }
+      updateFilesList(files.map(file => ({ ...file, batchNo: scan.batchNo, batchName: term?.batchName || scan.batchNo, historical: true })),
+        wholeSemester ? `本学期全部 ${courses.length} 门课程` : courses[0].courseName);
+      showPartialFailures(failed);
+    }, historyBatch);
+  }
+
+  function showPartialFailures(count) {
+    if (count) setStatus(`已找到 ${filesData.length} 个课件；有 ${count} 处未能读取，结果可能不完整。点击刷新重试。`, "error");
   }
 
   function parseCourseDetailRoute(pathname) {
@@ -208,11 +409,12 @@
     return new URLSearchParams(location.search).get("courseName") || "";
   }
 
-  async function fetchCourseList() {
+  async function fetchCourseList(scan) {
     const result = await apiRequest("/student/queryCourseList", {
-      contentType: null
+      contentType: null, scan
     });
     const weeks = getSuccessData(result) || [];
+    if (!Array.isArray(weeks)) throw new Error("课程列表格式发生变化。");
     const courses = [];
 
     weeks.forEach(week => {
@@ -228,21 +430,24 @@
     return uniqueBy(courses, course => `${course.courseNo}|${course.courseSeq}|${course.weekTimeId}`);
   }
 
-  async function fetchAllCoursewares(courses) {
+  async function fetchAllCoursewares(courses, scan, progress = "") {
     const results = [];
     let cursor = 0;
+    let failed = 0;
 
     async function worker() {
       while (cursor < courses.length) {
+        if (!isCurrentScan(scan)) return;
         const index = cursor++;
         const course = courses[index];
-        setStatus(`正在扫描 ${index + 1}/${courses.length}：${course.courseName || course.courseNo}`);
+        setStatus(`${progress}正在读取课次 ${index + 1}/${courses.length}：${course.courseName || course.courseNo}`);
 
         try {
-          const files = await fetchCoursewareList(course);
+          const files = await fetchCoursewareList(course, scan);
           results.push(...files);
         } catch (error) {
-          console.warn("[DUFE Ginkgo Downloader] Courseware scan failed", course, error);
+          if (error.name === "AbortError" || error.authRequired) throw error;
+          failed++;
         }
       }
     }
@@ -252,10 +457,10 @@
       worker
     ));
 
-    return uniqueBy(results, file => file.id || file.url || `${file.courseName}|${file.name}`);
+    return { files: uniqueBy(results, fileKey), failed };
   }
 
-  async function fetchCoursewareList(course) {
+  async function fetchCoursewareList(course, scan) {
     const body = {
       courseNo: course.courseNo,
       courseSeq: course.courseSeq,
@@ -263,15 +468,15 @@
       weektimeId: course.weekTimeId
     };
     const result = await apiRequest("/student/getCoursewareList", {
-      method: "POST",
+      method: "POST", scan,
       body: JSON.stringify(body)
     });
-    return normalizeCoursewares(getSuccessData(result) || [], course);
+    return normalizeCoursewares(getSuccessData(result) || [], { ...course, batchNo: scan?.batchNo });
   }
 
-  async function fetchChapterResources(course) {
+  async function fetchChapterResources(course, scan) {
     const result = await apiRequest("/student/getCourseInfo", {
-      method: "POST",
+      method: "POST", scan,
       body: JSON.stringify({
         dcCoursewareSourceParam: {
           courseNo: course.courseNo,
@@ -283,12 +488,12 @@
     const resources = data && data.sourceChapter
       ? getResourceListFromChapter(data.sourceChapter)
       : [];
-    return normalizeCoursewares(resources, course);
+    return normalizeCoursewares(resources, { ...course, batchNo: scan?.batchNo });
   }
 
   async function apiRequest(path, options = {}) {
     const headers = {
-      ...getAuthHeaders(),
+      ...getAuthHeaders(options.scan),
       ...(options.headers || {})
     };
     if (options.contentType !== null) {
@@ -299,21 +504,21 @@
       method: options.method || "GET",
       credentials: "include",
       headers,
-      body: options.body
+      body: options.body,
+      signal: options.scan?.signal
     });
 
     if (!response.ok) {
+      if (response.status === 401 || response.status === 403) throw authenticationError();
       throw new Error(`HTTP ${response.status}`);
     }
 
     return response.json();
   }
 
-  function getAuthHeaders() {
+  function getAuthHeaders(context = readIdentity()) {
     const headers = {};
-    const token = localStorage.getItem("token");
-    const batch = localStorage.getItem("batch");
-    const fingerprint = localStorage.getItem("fingerprint");
+    const { token, batchNo: batch, fingerprint } = context;
 
     if (token) headers.token = token;
     if (batch) headers.batchNo = batch;
@@ -322,9 +527,19 @@
   }
 
   function handleCapturedApi(detail) {
-    if (!detail.data) return;
+    if (!detail.data || viewMode !== "page" || isScanning) return;
+    if (detail.status && detail.status !== 200) return;
+    if (detail.data.code !== undefined && String(detail.data.code) !== "2000") return;
+    // Only accept passive results for the course currently on screen.
+    const route = parseCourseChaptersRoute(location.pathname) || parseCourseDetailRoute(location.pathname);
+    const request = parseRequestBody(detail.requestBody) || {};
+    const requestedCourse = request.dcCoursewareSourceParam || request;
+    if (!route || String(requestedCourse.courseNo) !== route.courseNo || String(requestedCourse.courseSeq) !== route.courseSeq) return;
+    if (route.weekTimeId && String(requestedCourse.weekTimeId || requestedCourse.weektimeId) !== String(route.weekTimeId)) return;
+    if (detail.batchNo && detail.batchNo !== readIdentity().batchNo) return;
 
     if (detail.url.includes("/student/getCoursewareList")) {
+      if (!Array.isArray(detail.data.data)) return;
       const course = {
         ...(parseRequestBody(detail.requestBody) || {}),
         courseName: getCourseNameFromUrl()
@@ -355,8 +570,16 @@
     }
   }
 
+  function authenticationError() {
+    return Object.assign(new Error("登录已失效或无权访问，请在白果云重新登录后刷新。"), { authRequired: true });
+  }
+
   function getSuccessData(response) {
     if (!response) return null;
+    if (response.code !== undefined && String(response.code) !== "2000") {
+      if (["1000", "401", "403"].includes(String(response.code))) throw authenticationError();
+      throw new Error(response.message || "平台暂时无法返回数据，请重试。");
+    }
     if (Object.prototype.hasOwnProperty.call(response, "data")) return response.data;
     return response;
   }
@@ -375,6 +598,7 @@
   }
 
   function normalizeCoursewares(items, course) {
+    if (!Array.isArray(items)) throw new Error("课件列表格式发生变化。");
     return (items || [])
       .map(item => normalizeCourseware(item, course))
       .filter(file => file.name || file.url);
@@ -409,6 +633,8 @@
       courseName: item.courseName || course.courseName || "",
       courseNo: item.courseNo || course.courseNo || "",
       courseSeq: item.courseSeq || course.courseSeq || "",
+      batchNo: String(item.batchNo || course.batchNo || localStorage.getItem("batch") || ""),
+      accountToken: localStorage.getItem("token") || "",
       weekTimeId: item.weekTimeId || item.weektimeId || course.weekTimeId,
       isDownload: isTrue(item.isDownload),
       raw: item
@@ -433,7 +659,7 @@
   }
 
   function updateFilesList(files, sourceLabel) {
-    filesData = uniqueBy(files || [], file => file.id || file.url || file.name);
+    filesData = uniqueBy(files || [], fileKey);
     if (!panel) return;
 
     panel.style.display = "block";
@@ -449,18 +675,26 @@
     if (!filesData.length) {
       container.innerHTML = `
         <div class="dufe-empty-state">
-          <div class="dufe-empty-title">还没有发现课件</div>
-          <div class="dufe-empty-text">打开课程章节页后点一下刷新。</div>
+          <div class="dufe-empty-title">${isWholeSemester() ? "本学期暂无可读取的课件" : viewMode === "history" ? "这门课暂无可读取的课件" : "还没有发现课件"}</div>
+          <div class="dufe-empty-text">${viewMode === "history" ? "可以换一门课程，或点击刷新重试。" : "打开课程章节页后点一下刷新。"}</div>
         </div>
       `;
       return;
     }
 
+    const counts = new Map();
+    filesData.forEach(file => counts.set(courseKey(file), (counts.get(courseKey(file)) || 0) + 1));
+    let previousCourse = "";
     const rows = filesData.map((file, index) => {
       const downloadDisabled = !getDownloadUrl(file);
       const openDisabled = !file.url;
       const accessLabel = file.isDownload ? "允许下载" : "仅可预览";
+      const key = courseKey(file);
+      const heading = isWholeSemester() && previousCourse !== key
+        ? `<div class="dufe-course-heading"><span>${escapeHtml(file.courseName || file.courseNo)} · ${escapeHtml(file.courseSeq)}班</span><span>${counts.get(key)} 个课件</span></div>` : "";
+      previousCourse = key;
       return `
+        ${heading}
         <div class="dufe-file-item">
           <div class="dufe-file-info">
             <div class="dufe-file-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</div>
@@ -481,10 +715,10 @@
     }).join("");
 
     const allButton = downloadableCount > 1
-      ? `<button class="dufe-download-all-btn" data-action="download-all">一键下载全部（${downloadableCount}）</button>`
+      ? `<button class="dufe-download-all-btn${isWholeSemester() ? " dufe-semester-download" : ""}" data-action="download-all">${isWholeSemester() ? "一键下载本学期" : "一键下载全部"}（${downloadableCount}）</button>`
       : "";
 
-    container.innerHTML = rows + allButton;
+    container.innerHTML = isWholeSemester() ? allButton + rows : rows + allButton;
   }
 
   async function openFileByIndex(index, button) {
@@ -538,6 +772,7 @@
   }
 
   async function downloadAllFiles(button) {
+    const initialLabel = button.textContent;
     const downloadable = filesData
       .map((file, index) => ({ file, index }))
       .filter(item => getDownloadUrl(item.file));
@@ -551,7 +786,7 @@
         await downloadFile(downloadable[i].file);
         successCount += 1;
       } catch (error) {
-        console.warn("[DUFE Ginkgo Downloader] Batch item failed", downloadable[i].file, error);
+        console.warn("[DUFE Ginkgo Downloader] Batch item failed", downloadable[i].file.name, error);
       }
       await sleep(350);
     }
@@ -559,12 +794,13 @@
     setStatus(`已提交 ${successCount}/${downloadable.length} 个下载任务，请在浏览器下载列表查看。`, successCount ? "success" : "error");
     setTimeout(() => {
       button.disabled = false;
-      button.textContent = `一键下载全部（${downloadable.length}）`;
+      button.textContent = initialLabel;
     }, 2500);
   }
 
   async function markDownloadCount(file) {
     if (!file.raw || !file.raw.id) return;
+    if (file.accountToken !== readIdentity().token) throw authenticationError();
 
     const item = {
       ...file.raw,
@@ -577,6 +813,7 @@
     try {
       await apiRequest("/student/studyCourse", {
         method: "POST",
+        headers: { batchNo: file.batchNo },
         body: JSON.stringify(item)
       });
     } catch (error) {
@@ -591,6 +828,7 @@
 
   function openViewUrl(file, options = {}) {
     return new Promise((resolve, reject) => {
+      if (file.accountToken !== readIdentity().token) { reject(authenticationError()); return; }
       chrome.runtime.sendMessage({
         type: "OPEN_VIEW_URL",
         url: file.url,
@@ -611,6 +849,7 @@
 
   function downloadFile(file) {
     return new Promise((resolve, reject) => {
+      if (file.accountToken !== readIdentity().token) { reject(authenticationError()); return; }
       chrome.runtime.sendMessage({
         type: "DOWNLOAD_FILE",
         url: getDownloadUrl(file),
@@ -636,7 +875,7 @@
   function buildFilename(file) {
     const courseName = sanitizeFilename(file.courseName || "未命名课程");
     const fileName = sanitizeFilename(file.name || "未命名课件");
-    return `${courseName}/${fileName}`;
+    return `${file.historical ? `${sanitizeFilename(file.batchName || file.batchNo)}/` : ""}${courseName}/${fileName}`;
   }
 
   function sanitizeFilename(value) {
@@ -680,5 +919,5 @@
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  window.DUFEGinkgoDownloaderScan = () => scanCurrentContext({ force: true });
+  window.DUFEGinkgoDownloaderScan = refreshActiveView;
 })();
