@@ -16,6 +16,36 @@ Downloads are saved under the browser download directory in a `DUFE-Ginkgo/` sub
 
 The extension mirrors Ginkgo's frontend request authentication shape: same-origin requests include the logged-in page's `token`, `batchNo`, and `fingerprint` request headers when they are available in the page runtime.
 
+## 历史学期课件（v0.2.0）
+
+在“银杏课件小助手”标题下切换到 **历史学期**：
+
+1. 选择学期。列表显示账号接口返回的全部学期；首次打开默认选中网页最近三个学期之前的一个学期。
+2. 选择课程。插件合并这门课的章节资源与各课次课件，去除重复项。
+3. 使用原来的“预览”“下载”或“一键下载全部”。“全部”指当前所选课程的已读取课件。
+
+历史课件保存到 `DUFE-Ginkgo/学期/课程/文件名`。切回 **当前页面** 即恢复原来的页面扫描方式。右上角刷新按钮刷新当前所选视图。
+
+学期选择仅用于插件自己的请求，不修改网页的 `localStorage.batch`，也不会切换白果云主页面的学期。浏览列表不会提交学习状态；用户主动下载且平台允许下载的课件仍沿用原有下载次数记录逻辑，并使用该课件所属学期。
+
+列表只包含当前登录账号能查询的课程和资源。旧学期可能没有课程，个别资源也可能已撤回或无法打开；查询失败会提示重试，部分请求失败时明确标注结果可能不完整。更换登录账号后会清空此前的选择与课件。
+
+实现依据：白果云前端对 `/student/term/getTermList` 的返回结果使用 `slice(-3)`；插件直接使用完整列表，并为自己的请求指定 `batchNo`。2026-11-06 已验证账号可以读取 2024—2025 学年第二学期的课程、章节和部分课件文件，不代表所有历史文件都仍可用。
+
+## Development checks
+
+The integration checks load the actual extension in Chromium with fixture responses. They do not log into the school or download real courseware.
+
+```sh
+python -m pip install -r tests/requirements.txt
+python -m playwright install chromium
+python tests/browser_history.py
+node --check content.js
+node --check pageHook.js
+```
+
+Coverage includes all-term selection, request semester isolation, chapter/session deduplication, rapid switching, account changes, partial failures, empty states, original page scanning, preview/download messaging, and desktop/mobile screenshots under `test-artifacts/`.
+
 ## XMUFD migration map
 
 | XMUFD behavior | DUFE Ginkgo behavior |

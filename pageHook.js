@@ -50,6 +50,7 @@
           method: init.method || "GET",
           requestBody: init.body || "",
           status: response.status,
+          batchNo: new Headers(init.headers || (args[0] instanceof Request ? args[0].headers : {})).get("batchNo") || "",
           data: parseJson(text)
         });
       }).catch(() => {});
@@ -60,10 +61,17 @@
 
   const originalOpen = XMLHttpRequest.prototype.open;
   const originalSend = XMLHttpRequest.prototype.send;
+  const originalSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
+
+  XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
+    if (String(name).toLowerCase() === "batchno") this.__dufeGinkgoBatch = String(value);
+    return originalSetRequestHeader.apply(this, arguments);
+  };
 
   XMLHttpRequest.prototype.open = function (method, url, ...rest) {
     this.__dufeGinkgoUrl = toUrl(url);
     this.__dufeGinkgoMethod = method || "GET";
+    this.__dufeGinkgoBatch = "";
     return originalOpen.apply(this, [method, url, ...rest]);
   };
 
@@ -76,6 +84,7 @@
           method: this.__dufeGinkgoMethod,
           requestBody: body || "",
           status: this.status,
+          batchNo: this.__dufeGinkgoBatch,
           data: parseJson(this.responseText)
         });
       });
